@@ -13,6 +13,7 @@ target_link_libraries(termux-api-broadcast termux-api-static)
 
 # TODO: get list through regex or similar
 set(script_files
+  scripts/termux-accessibility
   scripts/termux-api-start
   scripts/termux-api-stop
   scripts/termux-audio-info

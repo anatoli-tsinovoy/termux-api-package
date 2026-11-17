@@ -2,36 +2,125 @@
 set -e -u
 
 SCRIPTNAME=termux-accessibility
+usage() {
+    cat <<EOF
+Usage:
+  $SCRIPTNAME dump [display-id]
+  $SCRIPTNAME click x y [display-id] [duration-ms]
+  $SCRIPTNAME swipe x1 y1 x2 y2 [display-id] [duration-ms]
+  $SCRIPTNAME type text
+  $SCRIPTNAME global-action action
+  $SCRIPTNAME screenshot [display-id]
+  $SCRIPTNAME list-displays
+  $SCRIPTNAME -h | --help
+
+Display id defaults to 0. Click duration defaults to 1 ms; swipe duration
+defaults to 300 ms. Durations must be between 1 and 60000 ms.
+Coordinates and display ids must be nonnegative signed 32-bit integers.
+Pass type text and global actions as one argument;
+quote arguments containing spaces.
+EOF
+}
+
 show_usage() {
-    echo "Usage: $SCRIPTNAME options"
-    echo 'Options:'
-    echo 'dump (display id): returns UI XML as `adb` `uiautomator dump`'
-    echo 'click x y (display id) (duration): clicks at the given location for the given duration in milliseconds (default is 1)'
-    echo 'type toType: types the given string'
-    echo 'global-action globalAction: performs the given global action'
-    echo 'screenshot (display id): returns the taken screenshot as PNG'
-    echo 'list-displays: lists displays'
-    echo 'Default display id is 0'
+    usage
     exit 0
 }
 
-USAGE_REGEX='^(dump( [0-9]+)?|click [0-9]+ [0-9]+( [0-9]+)?( [0-9]+)?|type .+|global-action .+|screenshot( [0-9]+)?)|list-displays$'
-if ! [[ $@ =~ $USAGE_REGEX ]]; then
+usage_error() {
+    printf '%s: %s\n' "$SCRIPTNAME" "$1" >&2
+    usage >&2
+    exit 1
+}
+
+normalize_nonnegative_int32() {
+    [[ $1 =~ ^[0-9]+$ ]] || return 1
+
+    local value=$1
+    value="${value#"${value%%[!0]*}"}"
+    [[ -n $value ]] || value=0
+    ((${#value} <= 10)) || return 1
+    ((10#$value <= 2147483647)) || return 1
+    printf '%s\n' "$value"
+}
+
+normalize_duration() {
+    [[ $1 =~ ^[0-9]+$ ]] || return 1
+
+    local value=$1
+    value="${value#"${value%%[!0]*}"}"
+    [[ -n $value ]] || value=0
+    ((${#value} <= 5)) || return 1
+    ((10#$value > 0 && 10#$value <= 60000)) || return 1
+    printf '%s\n' "$value"
+}
+
+if [[ ${1-} == -h || ${1-} == --help ]]; then
+    [[ $# == 1 ]] || usage_error "help does not accept arguments"
     show_usage
 fi
 
-if [ "$1" == dump ]; then
-    ARGS=(--esn dump --ei display-id ${2-0})
-elif [ "$1" == click ]; then
-    ARGS=(--esn click --ei x $2 --ei y $3 --ei display-id ${4-0} --ei duration ${5-1})
-elif [ "$1" == type ]; then
-    ARGS=(--es type "$2")
-elif [ "$1" == global-action ]; then
-    ARGS=(--es global-action $2)
-elif [ "$1" == screenshot ]; then
-    ARGS=(--esn screenshot --ei display-id ${2-0})
-elif [ "$1" == list-displays ]; then
-	ARGS=(--esn list-displays)
-fi
+(($# > 0)) || usage_error "missing command"
+COMMAND=$1
+shift
+ARGS=()
 
-@TERMUX_PREFIX@/libexec/termux-api Accessibility "${ARGS[@]}"
+case "$COMMAND" in
+    dump|screenshot)
+        (($# <= 1)) || usage_error "$COMMAND accepts at most one display id"
+        DISPLAY_ID=${1-0}
+        DISPLAY_ID=$(normalize_nonnegative_int32 "$DISPLAY_ID") || usage_error "display id must be an integer from 0 to 2147483647"
+        if [[ $COMMAND == dump ]]; then
+            ARGS=(--esn dump --ei display-id "$DISPLAY_ID")
+        else
+            ARGS=(--esn screenshot --ei display-id "$DISPLAY_ID")
+        fi
+        ;;
+    click)
+        (($# >= 2 && $# <= 4)) || usage_error "click requires x y [display-id] [duration-ms]"
+        X=$1
+        Y=$2
+        DISPLAY_ID=${3-0}
+        DURATION=${4-1}
+        X=$(normalize_nonnegative_int32 "$X") || usage_error "x must be an integer from 0 to 2147483647"
+        Y=$(normalize_nonnegative_int32 "$Y") || usage_error "y must be an integer from 0 to 2147483647"
+        DISPLAY_ID=$(normalize_nonnegative_int32 "$DISPLAY_ID") || usage_error "display id must be an integer from 0 to 2147483647"
+        DURATION=$(normalize_duration "$DURATION") || usage_error "duration must be an integer from 1 to 60000 ms"
+        ARGS=(--esn click --ei x "$X" --ei y "$Y" --ei display-id "$DISPLAY_ID" --ei duration "$DURATION")
+        ;;
+    swipe)
+        (($# >= 4 && $# <= 6)) || usage_error "swipe requires x1 y1 x2 y2 [display-id] [duration-ms]"
+        X1=$1
+        Y1=$2
+        X2=$3
+        Y2=$4
+        DISPLAY_ID=${5-0}
+        DURATION=${6-300}
+        X1=$(normalize_nonnegative_int32 "$X1") || usage_error "x1 must be an integer from 0 to 2147483647"
+        Y1=$(normalize_nonnegative_int32 "$Y1") || usage_error "y1 must be an integer from 0 to 2147483647"
+        X2=$(normalize_nonnegative_int32 "$X2") || usage_error "x2 must be an integer from 0 to 2147483647"
+        Y2=$(normalize_nonnegative_int32 "$Y2") || usage_error "y2 must be an integer from 0 to 2147483647"
+        DISPLAY_ID=$(normalize_nonnegative_int32 "$DISPLAY_ID") || usage_error "display id must be an integer from 0 to 2147483647"
+        DURATION=$(normalize_duration "$DURATION") || usage_error "duration must be an integer from 1 to 60000 ms"
+        ARGS=(--esn swipe --ei x1 "$X1" --ei y1 "$Y1" --ei x2 "$X2" --ei y2 "$Y2" --ei display-id "$DISPLAY_ID" --ei duration "$DURATION")
+        ;;
+    type)
+        (($# == 1)) || usage_error "type requires exactly one text argument"
+        [[ -n $1 ]] || usage_error "type text must not be empty"
+        ARGS=(--es type "$1")
+        ;;
+    global-action)
+        (($# == 1)) || usage_error "global-action requires exactly one action argument"
+        [[ -n $1 ]] || usage_error "global-action must not be empty"
+        ARGS=(--es global-action "$1")
+        ;;
+    list-displays)
+        (($# == 0)) || usage_error "list-displays does not accept arguments"
+        ARGS=(--esn list-displays)
+        ;;
+    *)
+        usage_error "unknown command: $COMMAND"
+        ;;
+esac
+
+exec "@TERMUX_PREFIX@/libexec/termux-api" Accessibility "${ARGS[@]}"
